@@ -3,10 +3,11 @@ package main
 import (
 	"bufio"
 	"encoding/csv"
-	"fmt"
 	"flag"
-	"math/rand"
+	"fmt"
+	"io"
 	"log"
+	"math/rand"
 	"os"
 	"strings"
 	"time"
@@ -15,16 +16,20 @@ import (
 var filename string
 var timer int
 var shuffle bool
+
+type record struct {
+	question string
+	answer   string
+}
+
 func init() {
 	const (
 		defaultFilename = "problems.csv"
-		filenameUsage   = "filename for quest-ans CSV"
-		defaultTimer = 30
-		timerUsage = "timeout in seconds per question"
+		defaultTimer    = 30
 	)
-	flag.StringVar(&filename, "filename", defaultFilename, filenameUsage)
-	flag.IntVar(&timer, "timer", defaultTimer, timerUsage)
-	flag.BoolVar(&shuffle, "shuffle", false, "")
+	flag.StringVar(&filename, "filename", defaultFilename, "a csv file in the format of 'question,answer'")
+	flag.IntVar(&timer, "timer", defaultTimer, "timeout per question (in seconds)")
+	flag.BoolVar(&shuffle, "shuffle", false, "shuffle questions")
 }
 
 func main() {
@@ -32,83 +37,85 @@ func main() {
 	// open CSV file
 	fd, err := os.Open(filename)
 	if err != nil {
-		log.Fatalln(err)
+		log.Println(err)
+		exit(fmt.Sprintf("Failed to open the CSV file: %s\n", filename))
 	}
 	defer fd.Close()
+	lines := readCSV(fd)
+	records := parseRecords(lines, shuffle)
+	timeout_seconds := time.Duration(timer) * time.Second
+	score := quiz(*records, timeout_seconds, shuffle, os.Stdin)
+	log.Printf("Total Questions: %d\t\tCorrectly Answered: %d\n", len(*records), score)
+}
 
+func readCSV(fd io.Reader) [][]string {
 	// read CSV file with ReadAll as initial datasize expected is ~100 rows.
 	fileReader := csv.NewReader(fd)
-	records, error := fileReader.ReadAll()
-  	if error != nil {
-    	log.Fatalln(error)
-  	}
-  	fmt.Println(records)
-	timeout_seconds := time.Duration(timer) * time.Second
-	quiz(records, timeout_seconds, shuffle)
+	records, err := fileReader.ReadAll()
+	if err != nil {
+		log.Println(err)
+		exit(fmt.Sprintf("Failed to open the CSV file: %s\n", filename))
+	}
+	return records
 }
 
-func quiz(rows [][]string, timeout_seconds time.Duration, shuffle bool) {
-	log.Println("Starting Quiz ....")
-	count := 0
-	score := 0
-	// seed to get different result every time
-	rand.Seed(time.Now().UnixNano())
-	num_rows := len(rows)
-	userInput := make(chan string)
-	quit := make(chan bool)
-	go readInput(userInput, quit)
+func parseRecords(lines [][]string, shuffle bool) *[]record {
+	ret := make([]record, len(lines))
+	for i, line := range lines {
+		if len(line) < 2 {
+			// discard non valid records/lines
+			continue
+		}
+		ret[i] = record{
+			question: line[0],
+			answer:   strings.TrimSpace(line[1]),
+		}
+	}
 	if shuffle {
-		rand.Shuffle(num_rows, func(i, j int) { rows[i], rows[j] = rows[j], rows[i] })
+		// seed to get different result every time
+		rand.Seed(time.Now().UnixNano())
+		time.Sleep(1 * time.Second)
+		rand.Shuffle(len(ret), func(i, j int) { ret[i], ret[j] = ret[j], ret[i] })
 	}
-	for _,v := range rows {
-		count += 1
-		ques := v[0]
-		correctAnswer := v[1]
-		log.Printf("Ques-%d: %s", count, ques)
+	return &ret
+}
+
+func quiz(records []record, timeout_seconds time.Duration, shuffle bool, reader io.Reader) int {
+	log.Println("Starting Quiz ....")
+	score := 0
+	answersCh := make(chan string)
+	go readAnswerInput(answersCh, reader)
+	for i, rec := range records {
+		fmt.Printf("Problem #%d: %s = ", i+1, rec.question)
 		select {
-        	case inputAnswer := <-userInput:
-				inputAnswer = strings.TrimSpace(inputAnswer)
-				if checkAnswer(correctAnswer, inputAnswer) {
-					log.Println("Correct Answer")
-					score += 1
-				} else {
-					log.Println("Oops! Incorrect")
-				}
-            	
-        	case <-time.After(timeout_seconds):
-            	fmt.Println("\n Time is over!")
-        }
+		case answer := <-answersCh:
+			if answer == rec.answer {
+				fmt.Println("Correct")
+				score += 1
+			} else {
+				fmt.Println("Oops! Incorrect")
+			}
+		case <-time.After(timeout_seconds):
+			fmt.Println("\n Time is over!")
+		}
 	}
-	// select {
-    // case quit <- true:
-    //     fmt.Println("sent message")
-    // default:
-    //     fmt.Println("no message sent")
-    // }
 	log.Println("Finished Quiz")
-	log.Printf("\nTotal Questions: %d\t\tCorrectly Answered: %d\n", count, score)
+	return score
 }
 
-func readInput(userInput chan<- string, quit <-chan bool) {
-	for {
-		select {
-        case <-quit:
-			// close(userInput)
-            return
-        default:
-            var userAnswer string
-			// _, err := fmt.Scanln(&userAnswer)
-			r := bufio.NewReader(os.Stdin)
-			userAnswer, err := r.ReadString('\n')
-    		if err != nil {
-    		    log.Println(err)
-    		}
-			userAnswer = strings.TrimSpace(userAnswer)
-			userInput <- userAnswer
-        }
+func readAnswerInput(answersCh chan<- string, reader io.Reader) {
+	scanner := bufio.NewScanner(reader)
+	var answer string
+	for scanner.Scan() {
+		answer = scanner.Text()
+		answersCh <- strings.TrimSpace(answer)
+	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("reading standard input: %v\n", err)
 	}
 }
 
-func checkAnswer(correctAnswer, inputAnswer string) bool {
-	return correctAnswer == inputAnswer
+func exit(msg string) {
+	log.Println(msg)
+	os.Exit(1)
 }

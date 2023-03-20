@@ -28,6 +28,7 @@ func Parse(parseType, filename string) error {
 	// create buffer
 	b := make([]byte, 256) // chunk size
 	var wg sync.WaitGroup
+	var extractedLinks []Link
 
 	for {
 		// read content to buffer
@@ -39,17 +40,15 @@ func Parse(parseType, filename string) error {
 			break
 		}
 		fileContent := string(b[:readTotal])
-		// print content from buffer
-		fmt.Println("Printing from buffer")
-		fmt.Println(fileContent)
-		tkn := html.NewTokenizer(strings.NewReader(string(b[:readTotal])))
+		tkn := html.NewTokenizer(strings.NewReader(fileContent))
 		wg.Add(1)
 		go func() {
-			fmt.Printf("After Parse: %+v\n", parseHTML(tkn))
+			extractedLinks = append(extractedLinks, parseHTML(tkn)...)
 			wg.Done()
 		}()
 	}
 	wg.Wait()
+	fmt.Printf("Extracted Links\n%+v\n", extractedLinks)
 	return nil
 }
 

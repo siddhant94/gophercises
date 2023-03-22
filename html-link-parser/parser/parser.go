@@ -1,14 +1,14 @@
 package parser
 
 import (
-	// "bufio"
-	// "bytes"
 	"fmt"
-	"golang.org/x/net/html"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"sync"
+
+	"golang.org/x/net/html"
 )
 
 // Link struct with fields Text and Href
@@ -17,11 +17,11 @@ type Link struct {
 	Text string
 }
 
-func Parse(parseType, filename string) error {
+func Parse(filename string) ([]Link, error) {
 	f, err := os.Open(filename)
 	if err != nil {
-		fmt.Println(err)
-		return err
+		log.Println(err)
+		return nil, err
 	}
 	defer f.Close()
 
@@ -29,38 +29,46 @@ func Parse(parseType, filename string) error {
 	b := make([]byte, 256) // chunk size
 	var wg sync.WaitGroup
 	var extractedLinks []Link
-
+	var fileContent string
 	for {
 		// read content to buffer
 		readTotal, err := f.Read(b)
 		if err != nil {
 			if err != io.EOF {
-				fmt.Println(err)
+				log.Println(err)
 			}
 			break
 		}
-		fileContent := string(b[:readTotal])
-		tkn := html.NewTokenizer(strings.NewReader(fileContent))
-		wg.Add(1)
-		go func() {
-			extractedLinks = append(extractedLinks, parseHTML(tkn)...)
-			wg.Done()
-		}()
+		fileContent = fmt.Sprintf("%s%s", fileContent, string(b[:readTotal]))
 	}
+	tkn := html.NewTokenizer(strings.NewReader(fileContent))
+	wg.Add(1)
+	go func() {
+		extractedLinks = append(extractedLinks, parseHTML(tkn)...)
+		wg.Done()
+	}()
 	wg.Wait()
-	fmt.Printf("Extracted Links\n%+v\n", extractedLinks)
-	return nil
+	log.Printf("Extracted Links\n%+v\n", extractedLinks)
+	return extractedLinks, nil
 }
 
 func parseHTML(tkn *html.Tokenizer) []Link {
 	var vals []Link
 	var isLink bool
 	var oneLink Link
+Loop:
 	for {
 		tt := tkn.Next()
 		switch {
 		case tt == html.ErrorToken:
-			return vals
+			err := tkn.Err()
+        	if err == io.EOF {
+        	    //end of the file, break out of the loop
+        	    break Loop
+        	}
+			if err != nil {
+				log.Printf("\nhtml error token %v\n", err)
+			}
 		case tt == html.StartTagToken:
 			t := tkn.Token()
 			isLink = t.Data == "a"
@@ -79,9 +87,11 @@ func parseHTML(tkn *html.Tokenizer) []Link {
 				oneLink.Text = t.Data
 				vals = append(vals, oneLink)
 			}
-			// isLink = false
 		case tt == html.EndTagToken:
-			isLink = false
+			if isLink {
+				isLink = false
+			}
 		}
 	}
+	return vals
 }
